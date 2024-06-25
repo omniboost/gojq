@@ -5,6 +5,7 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"time"
 )
 
 func (env *env) execute(bc *Code, v any, vars ...any) Iter {
@@ -364,7 +365,15 @@ func (env *env) push(v any) {
 }
 
 func (env *env) pop() any {
-	return env.stack.pop()
+	v := env.stack.pop()
+
+	// when a time.Time value is popped, convert it to a string
+	switch x := v.(type) {
+	case time.Time:
+		v = x.Format(time.RFC3339Nano)
+	}
+
+	return v
 }
 
 func (env *env) popscope() (int, int) {
