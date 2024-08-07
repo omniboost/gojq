@@ -3,6 +3,7 @@ package gojq
 import (
 	"fmt"
 	"math/big"
+	"time"
 )
 
 // TypeOf returns the jq-flavored type name of v.
@@ -23,6 +24,8 @@ func TypeOf(v any) string {
 		return "array"
 	case map[string]any:
 		return "object"
+	case time.Time:
+		return "string"
 	default:
 		panic(fmt.Sprintf("invalid type: %[1]T (%[1]v)", v))
 	}
