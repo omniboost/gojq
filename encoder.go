@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -68,6 +69,8 @@ func (e *encoder) encode(v any) {
 		e.encodeArray(v)
 	case map[string]any:
 		e.encodeObject(v)
+	case time.Time:
+		e.encodeString(v.Format(time.RFC3339))
 	default:
 		panic(fmt.Sprintf("invalid type: %[1]T (%[1]v)", v))
 	}
