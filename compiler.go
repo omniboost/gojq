@@ -919,6 +919,8 @@ func (c *compiler) compileFunc(e *Func) error {
 	if f := c.lookupBuiltin(e.Name, len(e.Args)); f != nil {
 		return c.compileCallPc(f, e.Args)
 	}
+
+	// Execute built-in functions
 	if fds, ok := builtinFuncDefs[e.Name]; ok {
 		var compiled bool
 		for _, fd := range fds {
@@ -944,6 +946,24 @@ func (c *compiler) compileFunc(e *Func) error {
 			return c.compileCallPc(f, e.Args)
 		}
 	}
+
+	// When it is not a built-in function, check if it is a custom function and execute it.
+	if fn, ok := c.customFuncs[e.Name]; ok && fn.accept(len(e.Args)) {
+		if err := c.compileCallInternal(
+			[3]any{fn.callback, len(e.Args), e.Name},
+			e.Args,
+			true,
+			-1,
+		); err != nil {
+			return err
+		}
+		if fn.iter {
+			c.append(&code{op: opiter})
+		}
+		return nil
+	}
+
+	// When it is not a built-in function or custom function, check if it is an internal function and execute it.
 	if fn, ok := internalFuncs[e.Name]; ok && fn.accept(len(e.Args)) {
 		switch e.Name {
 		case "empty":
@@ -999,20 +1019,6 @@ func (c *compiler) compileFunc(e *Func) error {
 		default:
 			return c.compileCall(e.Name, e.Args)
 		}
-	}
-	if fn, ok := c.customFuncs[e.Name]; ok && fn.accept(len(e.Args)) {
-		if err := c.compileCallInternal(
-			[3]any{fn.callback, len(e.Args), e.Name},
-			e.Args,
-			true,
-			-1,
-		); err != nil {
-			return err
-		}
-		if fn.iter {
-			c.append(&code{op: opiter})
-		}
-		return nil
 	}
 	return &funcNotFoundError{e}
 }
