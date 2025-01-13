@@ -169,24 +169,41 @@ func (err *func2WrapError) Error() string {
 	return err.name + "(" + Preview(err.w) + "; " + Preview(err.x) + ") cannot be applied to " + Preview(err.v) + ": " + err.err.Error()
 }
 
-type exitCodeError struct {
-	value any
-	code  int
+type ExitCodeError struct {
+	Message any
+	Code    int
 }
 
-func (err *exitCodeError) Error() string {
-	if s, ok := err.value.(string); ok {
+func (err *ExitCodeError) Error() string {
+	// Check if the message is an error
+	if s, ok := err.Message.(error); ok {
+		return "error: " + s.Error()
+	}
+
+	// Check if the message is a string
+	if s, ok := err.Message.(string); ok {
 		return "error: " + s
 	}
-	return "error: " + jsonMarshal(err.value)
+
+	// If not, tru to marshal the message
+	return "error: " + jsonMarshal(err.Message)
 }
 
-func (err *exitCodeError) Value() any {
-	return err.value
+func (err *ExitCodeError) Value() any {
+	return err.Message
 }
 
-func (err *exitCodeError) ExitCode() int {
-	return err.code
+func (err *ExitCodeError) Unwrap() error {
+	// Check if the message is an error and return it
+	if err, ok := err.Message.(error); ok {
+		return err
+	}
+
+	return nil
+}
+
+func (err *ExitCodeError) ExitCode() int {
+	return err.Code
 }
 
 // HaltError is an error emitted by halt and halt_error functions.
@@ -196,21 +213,21 @@ func (err *exitCodeError) ExitCode() int {
 // You might think the iterator should not emit an error this case, but it
 // should so that we can recognize the halt error to stop the outer loop
 // of iterating input values; echo 1 2 3 | gojq "., halt".
-type HaltError exitCodeError
+type HaltError ExitCodeError
 
 func (err *HaltError) Error() string {
-	return "halt " + (*exitCodeError)(err).Error()
+	return "halt " + (*ExitCodeError)(err).Error()
 }
 
 // Value returns the value of the error. This implements [ValueError],
 // but halt error is not catchable by try-catch.
 func (err *HaltError) Value() any {
-	return (*exitCodeError)(err).Value()
+	return (*ExitCodeError)(err).Value()
 }
 
 // ExitCode returns the exit code of the error.
 func (err *HaltError) ExitCode() int {
-	return (*exitCodeError)(err).ExitCode()
+	return (*ExitCodeError)(err).ExitCode()
 }
 
 type flattenDepthError struct {

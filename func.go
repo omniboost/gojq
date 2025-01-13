@@ -2116,7 +2116,7 @@ func funcError(v any, args []any) any {
 	if len(args) > 0 {
 		v = args[0]
 	}
-	return &exitCodeError{v, 5}
+	return &ExitCodeError{v, 5}
 }
 
 func funcHalt(any) any {
