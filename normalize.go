@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/big"
 	"strings"
+	"time"
 )
 
 func normalizeNumber(v json.Number) any {
@@ -76,6 +77,25 @@ func normalizeNumbers(v any) any {
 	case map[string]any:
 		for k, x := range v {
 			v[k] = normalizeNumbers(x)
+		}
+		return v
+	default:
+		return v
+	}
+}
+
+func normalizeTime(v any) any {
+	switch v := v.(type) {
+	case time.Time:
+		return v.Format(time.RFC3339Nano)
+	case []any:
+		for i, x := range v {
+			v[i] = normalizeTime(x)
+		}
+		return v
+	case map[string]any:
+		for k, x := range v {
+			v[k] = normalizeTime(x)
 		}
 		return v
 	default:

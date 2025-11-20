@@ -46,10 +46,15 @@ func (c *Code) RunWithContext(ctx context.Context, v any, values ...any) Iter {
 	} else if len(values) < len(c.variables) {
 		return NewIter(&expectedVariableError{c.variables[len(values)]})
 	}
+
+	v = normalizeNumbers(v)
+	v = normalizeTime(v)
+
 	for i, v := range values {
 		values[i] = normalizeNumbers(v)
+		values[i] = normalizeTime(v)
 	}
-	return newEnv(ctx).execute(c, normalizeNumbers(v), values...)
+	return newEnv(ctx).execute(c, v, values...)
 }
 
 type scopeinfo struct {
