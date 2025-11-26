@@ -50,9 +50,9 @@ func (c *Code) RunWithContext(ctx context.Context, v any, values ...any) Iter {
 	v = normalizeNumbers(v)
 	v = normalizeTime(v)
 
-	for i, v := range values {
-		values[i] = normalizeNumbers(v)
-		values[i] = normalizeTime(v)
+	for i := range values {
+		values[i] = normalizeNumbers(values[i])
+		values[i] = normalizeTime(values[i])
 	}
 	return newEnv(ctx).execute(c, v, values...)
 }
