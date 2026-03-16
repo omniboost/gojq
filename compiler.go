@@ -17,6 +17,9 @@ type compiler struct {
 	inputIter     Iter
 	codes         []*code
 	codeinfos     []codeinfo
+	pcOffsets     map[int]int // maps PC index to source byte offset for runtime error reporting
+	userCodeStart int         // first PC index belonging to the user's query (after all builtins)
+	builtinDepth  int         // > 0 while compiling a builtin jq FuncDef; offsets inside builtins are suppressed
 	builtinScope  *scopeinfo
 	scopes        []*scopeinfo
 	scopecnt      int
@@ -27,6 +30,7 @@ type Code struct {
 	variables []string
 	codes     []*code
 	codeinfos []codeinfo
+	pcOffsets map[int]int // maps PC index to source byte offset for runtime error reporting
 }
 
 // Run runs the code with the variable values (which should be in the
@@ -74,6 +78,7 @@ func Compile(q *Query, options ...CompilerOption) (*Code, error) {
 	for _, opt := range options {
 		opt(c)
 	}
+	c.pcOffsets = make(map[int]int)
 	c.builtinScope = c.newScope()
 	scope := c.newScope()
 	c.scopes = []*scopeinfo{scope}
@@ -102,6 +107,7 @@ func Compile(q *Query, options ...CompilerOption) (*Code, error) {
 			}
 		}
 	}
+	c.userCodeStart = len(c.codes)
 	if err := c.compile(q); err != nil {
 		return nil, err
 	}
@@ -112,6 +118,7 @@ func Compile(q *Query, options ...CompilerOption) (*Code, error) {
 		variables: c.variables,
 		codes:     c.codes,
 		codeinfos: c.codeinfos,
+		pcOffsets: c.pcOffsets,
 	}, nil
 }
 
@@ -242,7 +249,7 @@ func (c *compiler) lookupVariable(name string) ([2]int, error) {
 			}
 		}
 	}
-	return [2]int{}, &variableNotFoundError{name}
+	return [2]int{}, &variableNotFoundError{n: name}
 }
 
 func (c *compiler) lookupFuncOrVariable(name string) (*funcinfo, *varinfo) {
@@ -310,6 +317,8 @@ func (c *compiler) compileFuncDef(e *FuncDef, builtin bool) error {
 	var scope *scopeinfo
 	if builtin {
 		scope = c.builtinScope
+		c.builtinDepth++
+		defer func() { c.builtinDepth-- }()
 	} else {
 		scope = c.scopes[len(c.scopes)-1]
 	}
@@ -420,10 +429,14 @@ func (c *compiler) compileQuery(e *Query) error {
 			},
 		)
 	default:
-		return c.compileCall(
+		if err := c.compileCall(
 			e.Op.getFunc(),
 			[]*Query{e.Left, e.Right},
-		)
+		); err != nil {
+			return err
+		}
+		c.setLastCodeOffset(e.Offset)
+		return nil
 	}
 }
 
@@ -860,29 +873,30 @@ func (c *compiler) compileIndex(e *Term, x *Index) error {
 			return err
 		}
 		c.appendCodeInfo(x)
+		c.setCodeOffset(x.Offset)
 		c.append(&code{op: opindex, v: k})
 		return nil
 	}
 	c.appendCodeInfo(x)
 	if x.Str != nil {
-		return c.compileCall("_index", []*Query{{Term: e}, {Term: &Term{Type: TermTypeString, Str: x.Str}}})
+		return c.compileCallAt("_index", []*Query{{Term: e}, {Term: &Term{Type: TermTypeString, Str: x.Str}}}, x.Offset)
 	}
 	if !x.IsSlice {
-		return c.compileCall("_index", []*Query{{Term: e}, x.Start})
+		return c.compileCallAt("_index", []*Query{{Term: e}, x.Start}, x.Offset)
 	}
 	if x.Start == nil {
-		return c.compileCall("_slice", []*Query{{Term: e}, x.End, {Term: &Term{Type: TermTypeNull}}})
+		return c.compileCallAt("_slice", []*Query{{Term: e}, x.End, {Term: &Term{Type: TermTypeNull}}}, x.Offset)
 	}
 	if x.End == nil {
-		return c.compileCall("_slice", []*Query{{Term: e}, {Term: &Term{Type: TermTypeNull}}, x.Start})
+		return c.compileCallAt("_slice", []*Query{{Term: e}, {Term: &Term{Type: TermTypeNull}}, x.Start}, x.Offset)
 	}
-	return c.compileCall("_slice", []*Query{{Term: e}, x.End, x.Start})
+	return c.compileCallAt("_slice", []*Query{{Term: e}, x.End, x.Start}, x.Offset)
 }
 
 func (c *compiler) compileFunc(e *Func) error {
 	if len(e.Args) == 0 {
 		if f, v := c.lookupFuncOrVariable(e.Name); f != nil {
-			return c.compileCallPc(f, e.Args)
+			return c.compileCallPc(f, e.Args, e.Offset)
 		} else if v != nil {
 			if e.Name[0] == '$' {
 				c.append(&code{op: oppop})
@@ -904,20 +918,20 @@ func (c *compiler) compileFunc(e *Func) error {
 			c.append(&code{op: opconst, v: env})
 			return nil
 		} else if e.Name[0] == '$' {
-			return &variableNotFoundError{e.Name}
+			return &variableNotFoundError{e.Name, e.Offset}
 		}
 	} else {
 		for i := len(c.scopes) - 1; i >= 0; i-- {
 			s := c.scopes[i]
 			for j := len(s.funcs) - 1; j >= 0; j-- {
 				if f := s.funcs[j]; f.name == e.Name && f.argcnt == len(e.Args) {
-					return c.compileCallPc(f, e.Args)
+					return c.compileCallPc(f, e.Args, e.Offset)
 				}
 			}
 		}
 	}
 	if f := c.lookupBuiltin(e.Name, len(e.Args)); f != nil {
-		return c.compileCallPc(f, e.Args)
+		return c.compileCallPc(f, e.Args, e.Offset)
 	}
 
 	// Execute built-in functions
@@ -943,7 +957,7 @@ func (c *compiler) compileFunc(e *Func) error {
 			}
 		}
 		if f := c.lookupBuiltin(e.Name, len(e.Args)); f != nil {
-			return c.compileCallPc(f, e.Args)
+			return c.compileCallPc(f, e.Args, e.Offset)
 		}
 	}
 
@@ -957,6 +971,8 @@ func (c *compiler) compileFunc(e *Func) error {
 		); err != nil {
 			return err
 		}
+		// Tag the opcall instruction with the function's source position.
+		c.setLastCodeOffset(e.Offset)
 		if fn.iter {
 			c.append(&code{op: opiter})
 		}
@@ -1017,7 +1033,7 @@ func (c *compiler) compileFunc(e *Func) error {
 			setfork()
 			return nil
 		default:
-			return c.compileCall(e.Name, e.Args)
+			return c.compileCallAt(e.Name, e.Args, e.Offset)
 		}
 	}
 	return &funcNotFoundError{e}
@@ -1300,6 +1316,7 @@ func (c *compiler) compileObject(e *Object) error {
 			return err
 		}
 	}
+	c.setCodeOffset(e.Offset)
 	c.append(&code{op: opobject, v: len(e.KeyVals)})
 	// optimize constant objects
 	l := len(e.KeyVals)
@@ -1511,6 +1528,7 @@ func (c *compiler) compileTermSuffix(e *Term, s *Suffix) error {
 		if err := c.compileTerm(e); err != nil {
 			return err
 		}
+		c.setCodeOffset(s.Offset)
 		c.append(&code{op: opiter})
 		return nil
 	} else if s.Optional {
@@ -1530,7 +1548,16 @@ func (c *compiler) compileTermSuffix(e *Term, s *Suffix) error {
 	}
 }
 
+// compileCall compiles a call to an internal function without associating a
+// source position (used by internal call sites that have no source offset).
 func (c *compiler) compileCall(name string, args []*Query) error {
+	return c.compileCallAt(name, args, -1) // -1 = no source position
+}
+
+// compileCallAt compiles a call to an internal function named name and records
+// the source byte offset of the call in pcOffsets so that runtime errors from
+// the opcall instruction can be attributed to the right source position.
+func (c *compiler) compileCallAt(name string, args []*Query, offset int) error {
 	fn := internalFuncs[name]
 	var indexing int
 	switch name {
@@ -1549,14 +1576,24 @@ func (c *compiler) compileCall(name string, args []*Query) error {
 	); err != nil {
 		return err
 	}
+	// Tag the opcall instruction (last code emitted by compileCallInternal)
+	// with the source position so wrapRuntimeError can attach it to errors.
+	c.setLastCodeOffset(offset)
 	if fn.iter {
 		c.append(&code{op: opiter})
 	}
 	return nil
 }
 
-func (c *compiler) compileCallPc(fn *funcinfo, args []*Query) error {
-	return c.compileCallInternal(fn.pc, args, false, -1)
+func (c *compiler) compileCallPc(fn *funcinfo, args []*Query, offset int) error {
+	if err := c.compileCallInternal(fn.pc, args, false, -1); err != nil {
+		return err
+	}
+	// Record the user's source offset on the opcall instruction so that errors
+	// propagating out of jq-defined builtin functions (e.g. map, select, group_by)
+	// can be attributed to the call site in the user's query.
+	c.setLastCodeOffset(offset)
+	return nil
 }
 
 func (c *compiler) compileCallInternal(
@@ -1627,6 +1664,24 @@ func (c *compiler) compileCallInternal(
 
 func (c *compiler) append(code *code) {
 	c.codes = append(c.codes, code)
+}
+
+// setCodeOffset records the source byte offset for the next instruction to be emitted.
+// Only records offsets for user-code instructions (not built-in jq functions) so that
+// the CLI can display accurate file/line positions for runtime errors.
+func (c *compiler) setCodeOffset(offset int) {
+	if c.builtinDepth == 0 && len(c.codes) >= c.userCodeStart {
+		c.pcOffsets[len(c.codes)] = offset
+	}
+}
+
+// setLastCodeOffset records the source byte offset for the most recently emitted instruction.
+// Used after compileCall to tag the opcall instruction with an operator's/function's source position.
+// Pass -1 to mean "no offset available" (used by internal call sites that have no source position).
+func (c *compiler) setLastCodeOffset(offset int) {
+	if c.builtinDepth == 0 && offset >= 0 && len(c.codes) > 0 && len(c.codes)-1 >= c.userCodeStart {
+		c.pcOffsets[len(c.codes)-1] = offset
+	}
 }
 
 func (c *compiler) appends(codes ...*code) {

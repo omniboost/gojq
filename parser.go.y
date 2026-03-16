@@ -20,6 +20,7 @@ func prependFuncDef(xs []*FuncDef, x *FuncDef) []*FuncDef {
   value    any
   token    string
   operator Operator
+  offset   int
 }
 
 %type<value> program header imports import meta body funcdefs funcdef funcargs query
@@ -184,27 +185,27 @@ expr
     }
     | expr tokCompareOp expr
     {
-        $$ = &Query{Left: $1.(*Query), Op: $2, Right: $3.(*Query)}
+        $$ = &Query{Left: $1.(*Query), Op: $2, Right: $3.(*Query), Offset: yyDollar[2].offset}
     }
     | expr '+' expr
     {
-        $$ = &Query{Left: $1.(*Query), Op: OpAdd, Right: $3.(*Query)}
+        $$ = &Query{Left: $1.(*Query), Op: OpAdd, Right: $3.(*Query), Offset: yyDollar[2].offset}
     }
     | expr '-' expr
     {
-        $$ = &Query{Left: $1.(*Query), Op: OpSub, Right: $3.(*Query)}
+        $$ = &Query{Left: $1.(*Query), Op: OpSub, Right: $3.(*Query), Offset: yyDollar[2].offset}
     }
     | expr '*' expr
     {
-        $$ = &Query{Left: $1.(*Query), Op: OpMul, Right: $3.(*Query)}
+        $$ = &Query{Left: $1.(*Query), Op: OpMul, Right: $3.(*Query), Offset: yyDollar[2].offset}
     }
     | expr '/' expr
     {
-        $$ = &Query{Left: $1.(*Query), Op: OpDiv, Right: $3.(*Query)}
+        $$ = &Query{Left: $1.(*Query), Op: OpDiv, Right: $3.(*Query), Offset: yyDollar[2].offset}
     }
     | expr '%' expr
     {
-        $$ = &Query{Left: $1.(*Query), Op: OpMod, Right: $3.(*Query)}
+        $$ = &Query{Left: $1.(*Query), Op: OpMod, Right: $3.(*Query), Offset: yyDollar[2].offset}
     }
     | term %prec tokTerm
     {
@@ -284,7 +285,7 @@ term
     }
     | tokIndex
     {
-        $$ = &Term{Type: TermTypeIndex, Index: &Index{Name: $1}}
+        $$ = &Term{Type: TermTypeIndex, Index: &Index{Name: $1, Offset: yyDollar[1].offset}}
     }
     | '.' suffix
     {
@@ -292,12 +293,13 @@ term
         if suffix.Iter {
             $$ = &Term{Type: TermTypeIdentity, SuffixList: []*Suffix{suffix}}
         } else {
+            suffix.Index.Offset = yyDollar[1].offset
             $$ = &Term{Type: TermTypeIndex, Index: suffix.Index}
         }
     }
     | '.' string
     {
-        $$ = &Term{Type: TermTypeIndex, Index: &Index{Str: $2.(*String)}}
+        $$ = &Term{Type: TermTypeIndex, Index: &Index{Str: $2.(*String), Offset: yyDollar[1].offset}}
     }
     | tokNull
     {
@@ -313,27 +315,27 @@ term
     }
     | tokIdentModuleIdent
     {
-        $$ = &Term{Type: TermTypeFunc, Func: &Func{Name: $1}}
+        $$ = &Term{Type: TermTypeFunc, Func: &Func{Name: $1, Offset: yyDollar[1].offset}}
     }
     | tokIdentModuleIdent '(' args ')'
     {
-        $$ = &Term{Type: TermTypeFunc, Func: &Func{Name: $1, Args: $3.([]*Query)}}
+        $$ = &Term{Type: TermTypeFunc, Func: &Func{Name: $1, Args: $3.([]*Query), Offset: yyDollar[1].offset}}
     }
     | tokVariableModuleVariable
     {
-        $$ = &Term{Type: TermTypeFunc, Func: &Func{Name: $1}}
+        $$ = &Term{Type: TermTypeFunc, Func: &Func{Name: $1, Offset: yyDollar[1].offset}}
     }
     | '{' '}'
     {
-        $$ = &Term{Type: TermTypeObject, Object: &Object{}}
+        $$ = &Term{Type: TermTypeObject, Object: &Object{Offset: yyDollar[1].offset}}
     }
     | '{' objectkeyvals '}'
     {
-        $$ = &Term{Type: TermTypeObject, Object: &Object{$2.([]*ObjectKeyVal)}}
+        $$ = &Term{Type: TermTypeObject, Object: &Object{KeyVals: $2.([]*ObjectKeyVal), Offset: yyDollar[1].offset}}
     }
     | '{' objectkeyvals ',' '}'
     {
-        $$ = &Term{Type: TermTypeObject, Object: &Object{$2.([]*ObjectKeyVal)}}
+        $$ = &Term{Type: TermTypeObject, Object: &Object{KeyVals: $2.([]*ObjectKeyVal), Offset: yyDollar[1].offset}}
     }
     | '[' ']'
     {
@@ -397,7 +399,7 @@ term
     }
     | term tokIndex
     {
-        $1.(*Term).SuffixList = append($1.(*Term).SuffixList, &Suffix{Index: &Index{Name: $2}})
+        $1.(*Term).SuffixList = append($1.(*Term).SuffixList, &Suffix{Index: &Index{Name: $2, Offset: yyDollar[2].offset}})
     }
     | term suffix
     {
@@ -409,11 +411,15 @@ term
     }
     | term '.' suffix
     {
-        $1.(*Term).SuffixList = append($1.(*Term).SuffixList, $3.(*Suffix))
+        suffix := $3.(*Suffix)
+        if suffix.Index != nil {
+            suffix.Index.Offset = yyDollar[2].offset
+        }
+        $1.(*Term).SuffixList = append($1.(*Term).SuffixList, suffix)
     }
     | term '.' string
     {
-        $1.(*Term).SuffixList = append($1.(*Term).SuffixList, &Suffix{Index: &Index{Str: $3.(*String)}})
+        $1.(*Term).SuffixList = append($1.(*Term).SuffixList, &Suffix{Index: &Index{Str: $3.(*String), Offset: yyDollar[2].offset}})
     }
 
 string
@@ -452,23 +458,23 @@ tokVariableModuleVariable
 suffix
     : '[' ']'
     {
-        $$ = &Suffix{Iter: true}
+        $$ = &Suffix{Iter: true, Offset: yyDollar[1].offset}
     }
     | '[' query ']'
     {
-        $$ = &Suffix{Index: &Index{Start: $2.(*Query)}}
+        $$ = &Suffix{Index: &Index{Start: $2.(*Query), Offset: yyDollar[1].offset}}
     }
     | '[' query ':' ']'
     {
-        $$ = &Suffix{Index: &Index{Start: $2.(*Query), IsSlice: true}}
+        $$ = &Suffix{Index: &Index{Start: $2.(*Query), IsSlice: true, Offset: yyDollar[1].offset}}
     }
     | '[' ':' query ']'
     {
-        $$ = &Suffix{Index: &Index{End: $3.(*Query), IsSlice: true}}
+        $$ = &Suffix{Index: &Index{End: $3.(*Query), IsSlice: true, Offset: yyDollar[1].offset}}
     }
     | '[' query ':' query ']'
     {
-        $$ = &Suffix{Index: &Index{Start: $2.(*Query), End: $4.(*Query), IsSlice: true}}
+        $$ = &Suffix{Index: &Index{Start: $2.(*Query), End: $4.(*Query), IsSlice: true, Offset: yyDollar[1].offset}}
     }
 
 args

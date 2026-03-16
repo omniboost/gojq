@@ -10,6 +10,7 @@ import (
 func (env *env) execute(bc *Code, v any, vars ...any) Iter {
 	env.codes = bc.codes
 	env.codeinfos = bc.codeinfos
+	env.pcOffsets = bc.pcOffsets
 	env.push(v)
 	for i := len(vars) - 1; i >= 0; i-- {
 		env.push(vars[i])
@@ -63,7 +64,7 @@ loop:
 				v, k := env.pop(), env.pop()
 				s, ok := k.(string)
 				if !ok {
-					err = &objectKeyNotStringError{k}
+					err = env.wrapRuntimeError(&objectKeyNotStringError{k}, pc)
 					break loop
 				}
 				if _, ok := m[s]; !ok {
@@ -152,13 +153,13 @@ loop:
 			p, v := code.v, env.pop()
 			if code.op == opindexarray && v != nil {
 				if _, ok := v.([]any); !ok {
-					err = &expectedArrayError{v}
+					err = env.wrapRuntimeError(&expectedArrayError{v}, pc)
 					break loop
 				}
 			}
 			w := funcIndex2(nil, v, p)
 			if e, ok := w.(error); ok {
-				err = e
+				err = env.wrapRuntimeError(e, pc)
 				break loop
 			}
 			env.push(w)
@@ -185,7 +186,7 @@ loop:
 				}
 				w := v[0].(func(any, []any) any)(x, args)
 				if e, ok := w.(error); ok {
-					err = e
+					err = env.wrapRuntimeError(e, pc)
 					break loop
 				}
 				env.push(w)
@@ -312,7 +313,7 @@ loop:
 				}
 				break loop
 			default:
-				err = &iteratorError{v}
+				err = env.wrapRuntimeError(&iteratorError{v}, pc)
 				env.push(emptyIter{})
 				break loop
 			}
@@ -356,6 +357,41 @@ loop:
 		return err, true
 	}
 	return nil, false
+}
+
+// wrapRuntimeError attaches the source byte offset for instruction at pc to
+// the error when available, enabling file/line display in the CLI.
+// Control-flow errors (HaltError, breakError) and try-catchable value errors
+// (ValueError) are never wrapped — wrapping them would break try-catch semantics
+// and halt/label/break control flow. Already-positioned errors are not re-wrapped.
+func (env *env) wrapRuntimeError(err error, pc int) error {
+	if _, ok := err.(ValueError); ok {
+		return err // never wrap try-catchable value errors
+	}
+	if _, ok := err.(*breakError); ok {
+		return err // never wrap control-flow errors
+	}
+	if _, ok := err.(PositionError); ok {
+		return err // already has a source position, don't re-wrap
+	}
+	if env.pcOffsets != nil {
+		if offset, ok := env.pcOffsets[pc]; ok {
+			return &runtimeError{err, offset}
+		}
+		// The error originated inside a builtin jq function whose instructions
+		// have no entries in pcOffsets (suppressed by builtinDepth). Walk the
+		// scope stack to find the nearest user-code call site that does have a
+		// recorded offset, so the error is attributed to the builtin call in
+		// the user's query (e.g. "map(.)" pointing at "map").
+		for i := env.scopes.index; i >= 0; i = env.scopes.data[i].next {
+			if callpc := env.scopes.data[i].value.pc; callpc >= 0 {
+				if offset, ok := env.pcOffsets[callpc]; ok {
+					return &runtimeError{err, offset}
+				}
+			}
+		}
+	}
+	return err
 }
 
 func (env *env) push(v any) {

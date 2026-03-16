@@ -12,7 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/itchyny/gojq"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+
+	"github.com/omniboost/gojq"
 )
 
 func ExampleQuery_Run() {
@@ -360,8 +363,14 @@ func TestQueryString(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(q, r) {
-		t.Errorf("\n%v\n%v", q, r)
+	if diff := cmp.Diff(q, r,
+		cmpopts.IgnoreFields(gojq.Func{}, "Offset"),
+		cmpopts.IgnoreFields(gojq.Index{}, "Offset"),
+		cmpopts.IgnoreFields(gojq.Object{}, "Offset"),
+		cmpopts.IgnoreFields(gojq.Suffix{}, "Offset"),
+		cmpopts.IgnoreFields(gojq.Query{}, "Offset"),
+	); diff != "" {
+		t.Errorf("mismatch (-want +got):\n%s", diff)
 	}
 }
 

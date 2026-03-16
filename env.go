@@ -10,6 +10,7 @@ type env struct {
 	values    []any
 	codes     []*code
 	codeinfos []codeinfo
+	pcOffsets map[int]int // maps PC to source byte offset for runtime errors
 	forks     []fork
 	backtrack bool
 	offset    int

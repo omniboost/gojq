@@ -1627,8 +1627,12 @@
   expected: |
     []
   error: |
-    flatten cannot be applied to: number (0)
-    flatten cannot be applied to: string ("")
+    flatten, flatten("")
+        flatten, flatten("")
+        ^  flatten cannot be applied to: number (0)
+    flatten, flatten("")
+        flatten, flatten("")
+                 ^  flatten cannot be applied to: string ("")
 
 - name: flatten/1 function
   args:
@@ -2508,6 +2512,141 @@
   error: |
     function not defined: map/2
   exit_code: 3
+
+- name: runtime error object key not string with position
+  args:
+    - '{(null): "value"}'
+  input: '{}'
+  error: |
+    {(null): "value"}
+        {(null): "value"}
+        ^  expected a string for object key but got: null
+
+- name: runtime error iterator with position
+  args:
+    - '.[]'
+  input: '"foo"'
+  error: |
+    .[]
+        .[]
+         ^  cannot iterate over: string ("foo")
+
+- name: runtime error iterator on null with position
+  args:
+    - '.[]'
+  input: 'null'
+  error: |
+    .[]
+        .[]
+         ^  cannot iterate over: null
+
+- name: runtime error iterator on null after pipe with position
+  args:
+    - '.foo | .[]'
+  input: '{"foo": null}'
+  error: |
+    .foo | .[]
+        .foo | .[]
+                ^  cannot iterate over: null
+
+- name: runtime error index with position
+  args:
+    - '.foo'
+  input: '128'
+  error: |
+    .foo
+        .foo
+        ^  expected an object but got: number (128)
+
+- name: runtime error index position in multi-step query
+  args:
+    - '.foo | .bar | .baz'
+  input: '128'
+  error: |
+    .foo | .bar | .baz
+        .foo | .bar | .baz
+        ^  expected an object but got: number (128)
+
+- name: runtime error arithmetic multiply with position
+  args:
+    - 'null * -1'
+  input: 'null'
+  error: |
+    null * -1
+        null * -1
+             ^  cannot multiply: null and number (-1)
+
+- name: runtime error arithmetic divide with position
+  args:
+    - '"a" | . / 2'
+  input: 'null'
+  error: |
+    "a" | . / 2
+        "a" | . / 2
+                ^  cannot divide: string ("a") and number (2)
+
+- name: runtime error tonumber with position
+  args:
+    - '"hello" | tonumber'
+  input: 'null'
+  error: |
+    "hello" | tonumber
+        "hello" | tonumber
+                  ^  tonumber cannot be applied to "hello": invalid number
+
+- name: runtime error function call with position at start of query
+  args:
+    - 'tonumber'
+  input: '"not-a-number"'
+  error: |
+    tonumber
+        tonumber
+        ^  tonumber cannot be applied to "not-a-number": invalid number
+
+- name: runtime error floor on string with position
+  args:
+    - '"a" | floor'
+  input: 'null'
+  error: |
+    "a" | floor
+        "a" | floor
+              ^  floor cannot be applied to: string ("a")
+
+- name: runtime error keys on number with position
+  args:
+    - '1 | keys'
+  input: 'null'
+  error: |
+    1 | keys
+        1 | keys
+            ^  keys cannot be applied to: number (1)
+
+- name: runtime error builtin jq function position points to function name
+  args:
+    - 'group_by(.)'
+  input: '"hello"'
+  error: |
+    group_by(.)
+        group_by(.)
+        ^  cannot iterate over: string ("hello")
+
+- name: runtime error map with wrong input type
+  args:
+    - 'map(.)'
+  input: '"hello"'
+  error: |
+    map(.)
+        map(.)
+        ^  cannot iterate over: string ("hello")
+
+- name: runtime error sort_by with wrong input type
+  args:
+    - 'sort_by(.)'
+  input: '"hello"'
+  error: |
+    sort_by(.)
+        sort_by(.)
+        ^  cannot iterate over: string ("hello")
 
 - name: function declaration with an argument
   args:
@@ -7192,9 +7331,15 @@
       "foo": "bar"
     }
   error: |
-    cannot divide: string ("{") and number (2)
-    cannot divide: string ("  \"foo\": \"bar\"") and number (2)
-    cannot divide: string ("}") and number (2)
+    . / 2
+        . / 2
+          ^  cannot divide: string ("{") and number (2)
+    . / 2
+        . / 2
+          ^  cannot divide: string ("  \"foo\": \"bar\"") and number (2)
+    . / 2
+        . / 2
+          ^  cannot divide: string ("}") and number (2)
 
 - name: null input value option
   args:
@@ -7903,6 +8048,37 @@
                    ^  unexpected token "["
   exit_code: 3
 
+- name: compile error in file with line indication
+  args:
+    - -f
+    - testdata/15.jq
+  input: 'null'
+  error: |
+    compile error: testdata/15.jq:3
+        3 | undefined_func |
+            ^  function not defined: undefined_func/0
+  exit_code: 3
+
+- name: compile error with function not defined
+  args:
+    - '.foo | undefined_func | .bar'
+  input: 'null'
+  error: |
+    compile error: .foo | undefined_func | .bar
+        .foo | undefined_func | .bar
+               ^  function not defined: undefined_func/0
+  exit_code: 3
+
+- name: compile error with variable not defined
+  args:
+    - '.foo | $undeclared'
+  input: 'null'
+  error: |
+    compile error: .foo | $undeclared
+        .foo | $undeclared
+               ^  variable not defined: $undeclared
+  exit_code: 3
+
 - name: query file not found
   args:
     - -f
@@ -8156,7 +8332,10 @@
     - 'testdata'
     - 'include "4"; $x'
   input: '0'
-  error: 'compile error: variable not defined: $x'
+  error: |
+    compile error: include "4"; $x
+        include "4"; $x
+                     ^  variable not defined: $x
   exit_code: 3
 
 - name: module directory option variable name conflict
@@ -8761,7 +8940,9 @@
     - '-j'
   input: 'null'
   error: |
-    compile error: function not defined: j/0
+    compile error: -j
+        -j
+         ^  function not defined: j/0
   exit_code: 3
 
 - name: double double dash
