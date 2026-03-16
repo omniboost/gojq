@@ -112,6 +112,17 @@ func (err *funcNotFoundError) Error() string {
 	return "function not defined: " + err.f.Name + "/" + strconv.Itoa(len(err.f.Args))
 }
 
+// QueryParseErrorOffset returns the byte offset of the function name token.
+// Deprecated: use Position instead.
+func (err *funcNotFoundError) QueryParseErrorOffset() int {
+	return err.f.Offset
+}
+
+// Position implements [PositionError].
+func (err *funcNotFoundError) Position() int {
+	return err.f.Offset
+}
+
 type func0TypeError struct {
 	name string
 	v    any
@@ -318,11 +329,23 @@ func (err *expectedVariableError) Error() string {
 }
 
 type variableNotFoundError struct {
-	n string
+	n      string
+	offset int
 }
 
 func (err *variableNotFoundError) Error() string {
 	return "variable not defined: " + err.n
+}
+
+// QueryParseErrorOffset returns the byte offset of the variable token.
+// Deprecated: use Position instead.
+func (err *variableNotFoundError) QueryParseErrorOffset() int {
+	return err.offset
+}
+
+// Position implements [PositionError].
+func (err *variableNotFoundError) Position() int {
+	return err.offset
 }
 
 type variableNameError struct {
@@ -368,6 +391,33 @@ type invalidPathIterError struct {
 
 func (err *invalidPathIterError) Error() string {
 	return "invalid path on iterating against: " + typeErrorPreview(err.v)
+}
+
+// runtimeError wraps a runtime error with a source byte offset so the CLI can
+// show file/line information when available.
+type runtimeError struct {
+	err    error
+	offset int
+}
+
+func (e *runtimeError) Error() string {
+	return e.err.Error()
+}
+
+func (e *runtimeError) Unwrap() error {
+	return e.err
+}
+
+// QueryParseErrorOffset returns the byte offset in the source where the
+// runtime error originated. Deprecated: use Position instead.
+func (e *runtimeError) QueryParseErrorOffset() int {
+	return e.offset
+}
+
+// Position implements [PositionError], returning the byte offset where the
+// runtime error occurred. Use [LineColumn] to convert it to line/column.
+func (e *runtimeError) Position() int {
+	return e.offset
 }
 
 type queryParseError struct {

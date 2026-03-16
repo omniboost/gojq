@@ -11,7 +11,7 @@ import (
 
 	"github.com/mattn/go-isatty"
 
-	"github.com/itchyny/gojq"
+	"github.com/omniboost/gojq"
 )
 
 const name = "gojq"
@@ -51,6 +51,9 @@ type cli struct {
 
 	outputYAMLSeparator bool
 	exitCodeError       error
+
+	queryFname  string // source file name of the compiled query (for error reporting)
+	querySource string // source text of the compiled query (for error reporting)
 }
 
 type flagopts struct {
@@ -218,7 +221,7 @@ Usage:
 	} else if len(args) == 0 {
 		arg = "."
 	} else {
-		arg, args, fname = strings.TrimSpace(args[0]), args[1:], "<arg>"
+		arg, args, fname = strings.TrimSpace(args[0]), args[1:], argFname
 	}
 	if opts.ExitStatus {
 		cli.exitCodeError = &exitCodeError{exitCodeNoValueErr}
@@ -267,13 +270,14 @@ Usage:
 			JSONParseError() (string, string, error)
 		}); ok {
 			fname, contents, err := err.JSONParseError()
-			return &compileError{&jsonParseError{fname, contents, 0, err}}
+			return &compileError{err: &jsonParseError{fname, contents, 0, err}}
 		}
-		return &compileError{err}
+		return &compileError{fname: fname, contents: arg, err: err}
 	}
 	if opts.InputNull {
 		iter = newNullInputIter()
 	}
+	cli.queryFname, cli.querySource = fname, arg
 	return cli.process(iter, code)
 }
 
@@ -346,7 +350,7 @@ func (cli *cli) process(iter inputIter, code *gojq.Code) error {
 				err = e
 				break
 			}
-			fmt.Fprintf(cli.errStream, "%s: %s\n", name, e)
+			fmt.Fprintf(cli.errStream, "%s: %s\n", name, cli.formatRuntimeError(e))
 			err = e
 		}
 	}
@@ -354,6 +358,17 @@ func (cli *cli) process(iter inputIter, code *gojq.Code) error {
 		return &emptyError{err}
 	}
 	return nil
+}
+
+// formatRuntimeError adds file/line context to errors that implement
+// [gojq.PositionError], matching the compile-error style.
+func (cli *cli) formatRuntimeError(e error) string {
+	if cli.queryFname != "" {
+		if eo, ok := e.(gojq.PositionError); ok {
+			return (&runtimeDisplayError{fname: cli.queryFname, contents: cli.querySource, err: e, offset: eo.Position()}).Error()
+		}
+	}
+	return e.Error()
 }
 
 func (cli *cli) printValues(iter gojq.Iter) error {

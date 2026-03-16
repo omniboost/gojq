@@ -12,8 +12,10 @@ import (
 	"github.com/itchyny/go-yaml"
 	"github.com/mattn/go-runewidth"
 
-	"github.com/itchyny/gojq"
+	"github.com/omniboost/gojq"
 )
+
+const argFname = "<arg>"
 
 type emptyError struct {
 	err error
@@ -59,15 +61,46 @@ func (*flagParseError) ExitCode() int {
 }
 
 type compileError struct {
-	err error
+	fname, contents string
+	err             error
 }
 
 func (err *compileError) Error() string {
+	if err.fname != "" {
+		if e, ok := err.err.(gojq.PositionError); ok {
+			offset := e.Position() + 1
+			linestr, line, column := getLineByOffset(err.contents, offset)
+			if err.fname != argFname || containsNewline(err.contents) {
+				return fmt.Sprintf("compile error: %s:%d\n%s  %s",
+					err.fname, line, formatLineInfo(linestr, line, column), err.err)
+			}
+			return fmt.Sprintf("compile error: %s\n    %s\n    %*c  %s",
+				err.contents, linestr, column+1, '^', err.err)
+		}
+	}
 	return "compile error: " + err.err.Error()
 }
 
 func (*compileError) ExitCode() int {
 	return exitCodeCompileErr
+}
+
+// runtimeDisplayError formats a runtime error with file/line context when the
+// error carries a source byte offset (via [gojq.PositionError]).
+type runtimeDisplayError struct {
+	fname, contents string
+	err             error
+	offset          int
+}
+
+func (err *runtimeDisplayError) Error() string {
+	linestr, line, column := getLineByOffset(err.contents, err.offset+1)
+	if err.fname != argFname || containsNewline(err.contents) {
+		return fmt.Sprintf("%s:%d\n%s  %s",
+			err.fname, line, formatLineInfo(linestr, line, column), err.err)
+	}
+	return fmt.Sprintf("%s\n    %s\n    %*c  %s",
+		err.contents, linestr, column+1, '^', err.err)
 }
 
 type queryParseError struct {
@@ -82,7 +115,7 @@ func (err *queryParseError) Error() string {
 		offset = e.Offset - len(e.Token) + 1
 	}
 	linestr, line, column := getLineByOffset(err.contents, offset)
-	if err.fname != "<arg>" || containsNewline(err.contents) {
+	if err.fname != argFname || containsNewline(err.contents) {
 		return fmt.Sprintf("invalid query: %s:%d\n%s  %s",
 			err.fname, line, formatLineInfo(linestr, line, column), err.err)
 	}

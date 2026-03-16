@@ -29,6 +29,7 @@ type Query struct {
 	Right    *Query
 	Patterns []*Pattern
 	Op       Operator
+	Offset   int // byte offset of the binary operator in the source, for error reporting
 }
 
 // Run the query.
@@ -389,6 +390,7 @@ type Index struct {
 	Start   *Query
 	End     *Query
 	IsSlice bool
+	Offset  int // byte offset in source query for error reporting
 }
 
 func (e *Index) String() string {
@@ -466,8 +468,9 @@ func (e *Index) toIndices(xs []any) []any {
 
 // Func ...
 type Func struct {
-	Name string
-	Args []*Query
+	Name   string
+	Args   []*Query
+	Offset int // byte offset in source query for error reporting
 }
 
 func (e *Func) String() string {
@@ -523,6 +526,7 @@ func (e *String) writeTo(s *strings.Builder) {
 // Object ...
 type Object struct {
 	KeyVals []*ObjectKeyVal
+	Offset  int // byte offset in source query for error reporting
 }
 
 func (e *Object) String() string {
@@ -600,6 +604,7 @@ type Suffix struct {
 	Index    *Index
 	Iter     bool
 	Optional bool
+	Offset   int // byte offset in source query for error reporting (used for .[] iterator)
 }
 
 func (e *Suffix) String() string {

@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/itchyny/gojq"
+	"github.com/omniboost/gojq"
 )
 
 func TestWithModuleLoaderError(t *testing.T) {

@@ -61,12 +61,14 @@ func (l *lexer) Lex(lval *yySymType) (tokenType int) {
 		l.token = ""
 		return eof
 	}
+	lval.offset = l.offset - 1 // default: offset of this token's first character
 	switch {
 	case isIdent(ch, false):
 		i := l.offset - 1
 		j, isModule := l.scanIdentOrModule()
 		l.token = l.source[i:j]
 		lval.token = l.token
+		lval.offset = i
 		if isModule {
 			return tokModuleIdent
 		}
@@ -116,6 +118,7 @@ func (l *lexer) Lex(lval *yySymType) (tokenType int) {
 			j, isModule := l.scanIdentOrModule()
 			l.token = l.source[i:j]
 			lval.token = l.token
+			lval.offset = i
 			if isModule {
 				return tokModuleVariable
 			}

@@ -1,3 +1,4 @@
 **/testdata/** binary
 /builtin.go    eol=lf linguist-generated=true
+/builtin.jq    eol=lf
 /parser.go     eol=lf linguist-generated=true
