@@ -381,8 +381,10 @@ func (env *env) wrapRuntimeError(err error, pc int) error {
 
 	// Find the error position (where the error actually occurred).
 	var errorPos *pcPosition
+	seen := make(map[pcPosition]bool)
 	if pos, ok := env.pcOffsets[pc]; ok {
 		errorPos = &pos
+		seen[pos] = true
 	}
 
 	// Walk the scope stack to collect caller frames. If errorPos is nil
@@ -390,7 +392,6 @@ func (env *env) wrapRuntimeError(err error, pc int) error {
 	// no entries in pcOffsets), the first scope hit becomes the error position
 	// (attributed to the builtin call in the user's query).
 	var frames []stackFrame
-	seen := make(map[pcPosition]bool)
 	for i := env.scopes.index; i >= 0; i = env.scopes.data[i].next {
 		callpc := env.scopes.data[i].value.pc
 		if callpc < 0 {
