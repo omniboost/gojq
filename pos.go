@@ -94,6 +94,10 @@ type StackTraceError interface {
 // computed from src, e.g. "1:8: function not defined: undefined_func/0".
 // Otherwise it returns err.Error() unchanged.
 //
+// If err implements [SourcePositionError] with a non-empty source file (i.e. the
+// error originated in an imported module), the output is prefixed with the
+// absolute path of that source file instead of a bare line/column pair.
+//
 // Use [FormatErrorAt] to include a filename in the output.
 //
 //	code, err := gojq.Compile(query)
@@ -127,7 +131,8 @@ func FormatError(src string, err error) string {
 // FormatErrorAt is like [FormatError] but also includes fname in the output,
 // producing messages of the form "fname:line:col: message". This matches the
 // standard Go/compiler error format and is suitable for errors from queries
-// loaded from named files:
+// loaded from named files. Both fname and any module source file path are
+// resolved to absolute paths before being included in the output.
 //
 //	src, _ := os.ReadFile("myfile.jq")
 //	query, _ := gojq.Parse(string(src))
@@ -146,7 +151,7 @@ func FormatError(src string, err error) string {
 //	    }
 //	}
 //
-// When err has no position info, it returns "absPath(fname): message".
+// When err has no position info, it returns "absolute/path/to/fname: message".
 func FormatErrorAt(fname, src string, err error) string {
 	fname = absPath(fname)
 	var msg string
