@@ -393,11 +393,22 @@ func (err *invalidPathIterError) Error() string {
 	return "invalid path on iterating against: " + typeErrorPreview(err.v)
 }
 
+// stackFrame represents one frame in a runtime error's call chain.
+type stackFrame struct {
+	offset int
+	fname  string // empty for main query
+	source string // empty for main query
+}
+
 // runtimeError wraps a runtime error with a source byte offset so the CLI can
-// show file/line information when available.
+// show file/line information when available. When the error originates inside
+// an imported module, fname and source identify the module file.
 type runtimeError struct {
 	err    error
 	offset int
+	fname  string // file path of the source (empty for main query)
+	source string // source text of the file (empty for main query)
+	frames []stackFrame // call chain from nearest caller to outermost
 }
 
 func (e *runtimeError) Error() string {
@@ -418,6 +429,71 @@ func (e *runtimeError) QueryParseErrorOffset() int {
 // runtime error occurred. Use [LineColumn] to convert it to line/column.
 func (e *runtimeError) Position() int {
 	return e.offset
+}
+
+// SourceFile implements [SourcePositionError]. It returns the file path of the
+// module where the error occurred, or an empty string for errors in the main query.
+func (e *runtimeError) SourceFile() string {
+	return e.fname
+}
+
+// SourceText implements [SourcePositionError]. It returns the full source text
+// of the module where the error occurred, for use with [LineColumn].
+func (e *runtimeError) SourceText() string {
+	return e.source
+}
+
+// CallStack implements [StackTraceError]. It returns the call frames from the
+// nearest caller to the outermost, or nil if no call chain is available.
+func (e *runtimeError) CallStack() []StackFrame {
+	if len(e.frames) == 0 {
+		return nil
+	}
+	result := make([]StackFrame, len(e.frames))
+	for i, f := range e.frames {
+		result[i] = StackFrame{
+			Offset:     f.offset,
+			SourceFile: f.fname,
+			SourceText: f.source,
+		}
+	}
+	return result
+}
+
+// compileError wraps a compile-time error (such as variableNotFoundError or
+// funcNotFoundError) with the source file and text of the module where it
+// occurred, so that FormatError/FormatErrorAt can show the correct file and
+// line number.
+type compileError struct {
+	err    error
+	fname  string
+	source string
+}
+
+func (e *compileError) Error() string {
+	return e.err.Error()
+}
+
+func (e *compileError) Unwrap() error {
+	return e.err
+}
+
+// Position implements [PositionError].
+func (e *compileError) Position() int {
+	if pe, ok := e.err.(PositionError); ok {
+		return pe.Position()
+	}
+	return 0
+}
+
+// SourceFile implements [SourcePositionError].
+func (e *compileError) SourceFile() string {
+	return e.fname
+}
+
+// SourceText implements [SourcePositionError].
+func (e *compileError) SourceText() string {
+	return e.source
 }
 
 type queryParseError struct {

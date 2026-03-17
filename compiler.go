@@ -9,20 +9,34 @@ import (
 	"strings"
 )
 
+// sourceInfo identifies a source file for error position tracking.
+type sourceInfo struct {
+	fname  string // file path (e.g. "jqs/jq-lib.jq")
+	source string // full source text of the file
+}
+
+// pcPosition identifies a position within a specific source file.
+type pcPosition struct {
+	sourceIndex int // index into the sources slice (-1 = main query)
+	offset      int // byte offset within that source
+}
+
 type compiler struct {
-	moduleLoader  ModuleLoader
-	environLoader func() []string
-	variables     []string
-	customFuncs   map[string]function
-	inputIter     Iter
-	codes         []*code
-	codeinfos     []codeinfo
-	pcOffsets     map[int]int // maps PC index to source byte offset for runtime error reporting
-	userCodeStart int         // first PC index belonging to the user's query (after all builtins)
-	builtinDepth  int         // > 0 while compiling a builtin jq FuncDef; offsets inside builtins are suppressed
-	builtinScope  *scopeinfo
-	scopes        []*scopeinfo
-	scopecnt      int
+	moduleLoader   ModuleLoader
+	environLoader  func() []string
+	variables      []string
+	customFuncs    map[string]function
+	inputIter      Iter
+	codes          []*code
+	codeinfos      []codeinfo
+	pcOffsets      map[int]pcPosition // maps PC index to source position for runtime error reporting
+	sources        []sourceInfo       // source files for imported modules (index 0+)
+	currentSource  int                // index into sources for the module currently being compiled (-1 = main query)
+	userCodeStart  int                // first PC index belonging to the user's query (after all builtins)
+	builtinDepth   int                // > 0 while compiling a builtin jq FuncDef; offsets inside builtins are suppressed
+	builtinScope   *scopeinfo
+	scopes         []*scopeinfo
+	scopecnt       int
 }
 
 // Code is a compiled jq query.
@@ -30,7 +44,8 @@ type Code struct {
 	variables []string
 	codes     []*code
 	codeinfos []codeinfo
-	pcOffsets map[int]int // maps PC index to source byte offset for runtime error reporting
+	pcOffsets map[int]pcPosition // maps PC index to source position for runtime error reporting
+	sources   []sourceInfo       // source files for imported modules
 }
 
 // Run runs the code with the variable values (which should be in the
@@ -78,7 +93,8 @@ func Compile(q *Query, options ...CompilerOption) (*Code, error) {
 	for _, opt := range options {
 		opt(c)
 	}
-	c.pcOffsets = make(map[int]int)
+	c.pcOffsets = make(map[int]pcPosition)
+	c.currentSource = -1 // main query
 	c.builtinScope = c.newScope()
 	scope := c.newScope()
 	c.scopes = []*scopeinfo{scope}
@@ -119,6 +135,7 @@ func Compile(q *Query, options ...CompilerOption) (*Code, error) {
 		codes:     c.codes,
 		codeinfos: c.codeinfos,
 		pcOffsets: c.pcOffsets,
+		sources:   c.sources,
 	}, nil
 }
 
@@ -170,7 +187,16 @@ func (c *compiler) compileImport(i *Import) error {
 		return nil
 	}
 	var q *Query
+	var moduleFname, moduleSource string
+	// Try LoadModuleWithSource first to get the resolved file path and source
+	// text, enabling accurate error positions inside imported modules.
 	if moduleLoader, ok := c.moduleLoader.(interface {
+		LoadModuleWithSource(string, map[string]any) (*Query, string, string, error)
+	}); ok {
+		if q, moduleFname, moduleSource, err = moduleLoader.LoadModuleWithSource(path, i.Meta.ToValue()); err != nil {
+			return err
+		}
+	} else if moduleLoader, ok := c.moduleLoader.(interface {
 		LoadModuleWithMeta(string, map[string]any) (*Query, error)
 	}); ok {
 		if q, err = moduleLoader.LoadModuleWithMeta(path, i.Meta.ToValue()); err != nil {
@@ -184,7 +210,33 @@ func (c *compiler) compileImport(i *Import) error {
 		}
 	}
 	c.appendCodeInfo("module " + path)
-	if err = c.compileModule(q, alias); err != nil {
+	// If we have source info, register this module and compile with proper source
+	// tracking so runtime errors can reference the correct file and line.
+	// Otherwise, suppress offsets so errors fall back to the call site in the
+	// user's query (same behavior as built-in jq functions).
+	prevSource := c.currentSource
+	if moduleFname != "" && moduleSource != "" {
+		c.sources = append(c.sources, sourceInfo{fname: moduleFname, source: moduleSource})
+		c.currentSource = len(c.sources) - 1
+	} else {
+		c.builtinDepth++
+	}
+	err = c.compileModule(q, alias)
+	if moduleFname != "" && moduleSource != "" {
+		c.currentSource = prevSource
+	} else {
+		c.builtinDepth--
+	}
+	if err != nil {
+		// Wrap compile errors with module source info so that
+		// FormatError/FormatErrorAt can show the correct file and line.
+		if moduleFname != "" && moduleSource != "" {
+			if _, ok := err.(PositionError); ok {
+				if _, ok := err.(SourcePositionError); !ok {
+					return &compileError{err: err, fname: moduleFname, source: moduleSource}
+				}
+			}
+		}
 		return err
 	}
 	c.appendCodeInfo("end of module " + path)
@@ -503,8 +555,9 @@ func (c *compiler) compileQueryUpdate(l, r *Query, op Operator) error {
 	case OpModify:
 		return c.compileFunc(
 			&Func{
-				Name: op.getFunc(),
-				Args: []*Query{l, r},
+				Name:   op.getFunc(),
+				Args:   []*Query{l, r},
+				Offset: -1,
 			},
 		)
 	default:
@@ -516,16 +569,18 @@ func (c *compiler) compileQueryUpdate(l, r *Query, op Operator) error {
 		c.append(&code{op: opstore, v: c.pushVariable(name)})
 		return c.compileFunc(
 			&Func{
-				Name: "_modify",
+				Name:   "_modify",
+				Offset: -1,
 				Args: []*Query{
 					l,
 					{Term: &Term{
 						Type: TermTypeFunc,
 						Func: &Func{
-							Name: op.getFunc(),
+							Name:   op.getFunc(),
+							Offset: -1,
 							Args: []*Query{
 								{Term: &Term{Type: TermTypeIdentity}},
-								{Term: &Term{Type: TermTypeFunc, Func: &Func{Name: name}}},
+								{Term: &Term{Type: TermTypeFunc, Func: &Func{Name: name, Offset: -1}}},
 							},
 						},
 					}},
@@ -820,7 +875,7 @@ func (c *compiler) compileTerm(e *Term) error {
 	case TermTypeIdentity:
 		return nil
 	case TermTypeRecurse:
-		return c.compileFunc(&Func{Name: "recurse"})
+		return c.compileFunc(&Func{Name: "recurse", Offset: -1})
 	case TermTypeNull:
 		c.append(&code{op: opconst, v: nil})
 		return nil
@@ -1023,7 +1078,7 @@ func (c *compiler) compileFunc(e *Func) error {
 			if err := c.compileQuery(e.Args[0]); err != nil {
 				return err
 			}
-			if err := c.compileFunc(&Func{Name: "debug"}); err != nil {
+			if err := c.compileFunc(&Func{Name: "debug", Offset: -1}); err != nil {
 				if _, ok := err.(*funcNotFoundError); ok {
 					err = &funcNotFoundError{e}
 				}
@@ -1346,7 +1401,7 @@ func (c *compiler) compileObjectKeyVal(v [2]int, kv *ObjectKeyVal) error {
 				c.append(&code{op: oppush, v: key[1:]})
 			}
 			c.append(&code{op: opload, v: v})
-			if err := c.compileFunc(&Func{Name: key}); err != nil {
+			if err := c.compileFunc(&Func{Name: key, Offset: -1}); err != nil {
 				return err
 			}
 		} else {
@@ -1462,8 +1517,9 @@ func (c *compiler) compileFormat(format string, str *String) error {
 	f := formatToFunc(format)
 	if f == nil {
 		f = &Func{
-			Name: "format",
-			Args: []*Query{{Term: &Term{Type: TermTypeString, Str: &String{Str: format[1:]}}}},
+			Name:   "format",
+			Offset: -1,
+			Args:   []*Query{{Term: &Term{Type: TermTypeString, Str: &String{Str: format[1:]}}}},
 		}
 	}
 	if str == nil {
@@ -1475,25 +1531,25 @@ func (c *compiler) compileFormat(format string, str *String) error {
 func formatToFunc(format string) *Func {
 	switch format {
 	case "@text":
-		return &Func{Name: "tostring"}
+		return &Func{Name: "tostring", Offset: -1}
 	case "@json":
-		return &Func{Name: "tojson"}
+		return &Func{Name: "tojson", Offset: -1}
 	case "@html":
-		return &Func{Name: "_tohtml"}
+		return &Func{Name: "_tohtml", Offset: -1}
 	case "@uri":
-		return &Func{Name: "_touri"}
+		return &Func{Name: "_touri", Offset: -1}
 	case "@urid":
-		return &Func{Name: "_tourid"}
+		return &Func{Name: "_tourid", Offset: -1}
 	case "@csv":
-		return &Func{Name: "_tocsv"}
+		return &Func{Name: "_tocsv", Offset: -1}
 	case "@tsv":
-		return &Func{Name: "_totsv"}
+		return &Func{Name: "_totsv", Offset: -1}
 	case "@sh":
-		return &Func{Name: "_tosh"}
+		return &Func{Name: "_tosh", Offset: -1}
 	case "@base64":
-		return &Func{Name: "_tobase64"}
+		return &Func{Name: "_tobase64", Offset: -1}
 	case "@base64d":
-		return &Func{Name: "_tobase64d"}
+		return &Func{Name: "_tobase64d", Offset: -1}
 	default:
 		return nil
 	}
@@ -1505,7 +1561,7 @@ func (c *compiler) compileString(s *String, f *Func) error {
 		return nil
 	}
 	if f == nil {
-		f = &Func{Name: "tostring"}
+		f = &Func{Name: "tostring", Offset: -1}
 	}
 	var q *Query
 	for _, e := range s.Queries {
@@ -1671,7 +1727,7 @@ func (c *compiler) append(code *code) {
 // the CLI can display accurate file/line positions for runtime errors.
 func (c *compiler) setCodeOffset(offset int) {
 	if c.builtinDepth == 0 && len(c.codes) >= c.userCodeStart {
-		c.pcOffsets[len(c.codes)] = offset
+		c.pcOffsets[len(c.codes)] = pcPosition{sourceIndex: c.currentSource, offset: offset}
 	}
 }
 
@@ -1680,7 +1736,7 @@ func (c *compiler) setCodeOffset(offset int) {
 // Pass -1 to mean "no offset available" (used by internal call sites that have no source position).
 func (c *compiler) setLastCodeOffset(offset int) {
 	if c.builtinDepth == 0 && offset >= 0 && len(c.codes) > 0 && len(c.codes)-1 >= c.userCodeStart {
-		c.pcOffsets[len(c.codes)-1] = offset
+		c.pcOffsets[len(c.codes)-1] = pcPosition{sourceIndex: c.currentSource, offset: offset}
 	}
 }
 
