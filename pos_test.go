@@ -601,6 +601,78 @@ func TestSourcePositionError_NoBogusOffset0Frames(t *testing.T) {
 	}
 }
 
+// TestSourcePositionError_CompileErrorInModule verifies that compile errors
+// (like "variable not defined") in imported modules implement SourcePositionError
+// and point at the correct file and line in the module, not the main query.
+func TestSourcePositionError_CompileErrorInModule(t *testing.T) {
+	tests := []struct {
+		name       string
+		moduleSrc  string
+		wantErrMsg string
+		wantLine   int
+	}{
+		{
+			name:       "undefined variable",
+			moduleSrc:  "# line1\n# line2\ndef foo: $undefined_var ;\n",
+			wantErrMsg: "variable not defined",
+			wantLine:   3,
+		},
+		{
+			name:       "undefined function",
+			moduleSrc:  "def bar:\n    no_such_func ;\n",
+			wantErrMsg: "function not defined",
+			wantLine:   2,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			loader := &testModuleLoader{
+				modules: map[string]string{
+					"errmod": tc.moduleSrc,
+				},
+			}
+			mainSrc := `import "errmod" as m; m::foo`
+			if tc.name == "undefined function" {
+				mainSrc = `import "errmod" as m; m::bar`
+			}
+			q, err := gojq.Parse(mainSrc)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			_, compErr := gojq.Compile(q, gojq.WithModuleLoader(loader))
+			if compErr == nil {
+				t.Fatal("expected a compile error")
+			}
+			if !strings.Contains(compErr.Error(), tc.wantErrMsg) {
+				t.Fatalf("error = %q, want it to contain %q", compErr.Error(), tc.wantErrMsg)
+			}
+			// Must implement SourcePositionError pointing at the module
+			spe, ok := compErr.(gojq.SourcePositionError)
+			if !ok {
+				t.Fatalf("expected SourcePositionError, got %T: %v", compErr, compErr)
+			}
+			if spe.SourceFile() != "errmod.jq" {
+				t.Errorf("SourceFile() = %q, want %q", spe.SourceFile(), "errmod.jq")
+			}
+			if spe.SourceText() != tc.moduleSrc {
+				t.Errorf("SourceText() = %q, want %q", spe.SourceText(), tc.moduleSrc)
+			}
+			line, _ := gojq.LineColumn(spe.SourceText(), spe.Position())
+			if line != tc.wantLine {
+				t.Errorf("line = %d, want %d", line, tc.wantLine)
+			}
+			// FormatErrorAt should show module file, not the main query file
+			formatted := gojq.FormatErrorAt("main.jq", mainSrc, compErr)
+			if !strings.Contains(formatted, "errmod.jq:") {
+				t.Errorf("FormatErrorAt should contain module filename, got: %q", formatted)
+			}
+			if strings.Contains(formatted, "main.jq:") {
+				t.Errorf("FormatErrorAt should NOT contain main.jq filename, got: %q", formatted)
+			}
+		})
+	}
+}
+
 // TestSourcePositionError_MainQueryErrors verifies that errors in the main
 // query do NOT set SourceFile/SourceText (they should be empty) and have
 // no call stack.

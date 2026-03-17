@@ -228,6 +228,15 @@ func (c *compiler) compileImport(i *Import) error {
 		c.builtinDepth--
 	}
 	if err != nil {
+		// Wrap compile errors with module source info so that
+		// FormatError/FormatErrorAt can show the correct file and line.
+		if moduleFname != "" && moduleSource != "" {
+			if _, ok := err.(PositionError); ok {
+				if _, ok := err.(SourcePositionError); !ok {
+					return &compileError{err: err, fname: moduleFname, source: moduleSource}
+				}
+			}
+		}
 		return err
 	}
 	c.appendCodeInfo("end of module " + path)

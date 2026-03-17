@@ -460,6 +460,42 @@ func (e *runtimeError) CallStack() []StackFrame {
 	return result
 }
 
+// compileError wraps a compile-time error (such as variableNotFoundError or
+// funcNotFoundError) with the source file and text of the module where it
+// occurred, so that FormatError/FormatErrorAt can show the correct file and
+// line number.
+type compileError struct {
+	err    error
+	fname  string
+	source string
+}
+
+func (e *compileError) Error() string {
+	return e.err.Error()
+}
+
+func (e *compileError) Unwrap() error {
+	return e.err
+}
+
+// Position implements [PositionError].
+func (e *compileError) Position() int {
+	if pe, ok := e.err.(PositionError); ok {
+		return pe.Position()
+	}
+	return 0
+}
+
+// SourceFile implements [SourcePositionError].
+func (e *compileError) SourceFile() string {
+	return e.fname
+}
+
+// SourceText implements [SourcePositionError].
+func (e *compileError) SourceText() string {
+	return e.source
+}
+
 type queryParseError struct {
 	fname, contents string
 	err             error
