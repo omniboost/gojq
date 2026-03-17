@@ -2648,6 +2648,14 @@
         sort_by(.)
         ^  cannot iterate over: string ("hello")
 
+- name: runtime error in imported module shows module file and line with stack trace
+  args:
+    - -L
+    - 'testdata'
+    - 'import "err_module" as m; m::iter_value'
+  input: '0'
+  error: "    3 |     .[] ;\n             ^  cannot iterate over: number (0)\nimport \"err_module\" as m; m::iter_value\n    import \"err_module\" as m; m::iter_value\n                              ^  ↳ called from here\n"
+
 - name: function declaration with an argument
   args:
     - 'def f(g): g | g; f(..)'
@@ -8012,40 +8020,28 @@
   args:
     - -f
     - testdata/10.jq
-  error: |
-    invalid query: testdata/10.jq:5
-        5 | bar ]
-                ^  unexpected token "]"
+  error: "10.jq:5\n    5 | bar ]\n            ^  unexpected token \"]\"\n"
   exit_code: 3
 
 - name: invalid multiple line query in dos format
   args:
     - -f
     - testdata/11.jq
-  error: |
-    invalid query: testdata/11.jq:5
-        5 | bar ]
-                ^  unexpected token "]"
+  error: "11.jq:5\n    5 | bar ]\n            ^  unexpected token \"]\"\n"
   exit_code: 3
 
 - name: invalid multiple line query in mac format
   args:
     - -f
     - testdata/12.jq
-  error: |
-    invalid query: testdata/12.jq:5
-        5 | bar ]
-                ^  unexpected token "]"
+  error: "12.jq:5\n    5 | bar ]\n            ^  unexpected token \"]\"\n"
   exit_code: 3
 
 - name: invalid query in file
   args:
     - -f
     - testdata/2.jq
-  error: |
-    invalid query: testdata/2.jq:3
-        3 |   bar, []
-                   ^  unexpected token "["
+  error: "2.jq:3\n    3 |   bar, []\n               ^  unexpected token \"[\"\n"
   exit_code: 3
 
 - name: compile error in file with line indication
@@ -8053,10 +8049,7 @@
     - -f
     - testdata/15.jq
   input: 'null'
-  error: |
-    compile error: testdata/15.jq:3
-        3 | undefined_func |
-            ^  function not defined: undefined_func/0
+  error: "15.jq:3\n    3 | undefined_func |\n        ^  function not defined: undefined_func/0\n"
   exit_code: 3
 
 - name: compile error with function not defined
@@ -8403,10 +8396,7 @@
     - 'testdata'
     - 'include "7"; .'
   input: '0'
-  error: |
-    invalid query: testdata/7.jq:1
-        1 | def f: 1 +
-                      ^  unexpected EOF
+  error: "7.jq:1\n    1 | def f: 1 +\n                  ^  unexpected EOF\n"
   exit_code: 3
 
 - name: module directive

@@ -92,8 +92,9 @@ func TestFormatErrorAt(t *testing.T) {
 	}
 
 	got := gojq.FormatErrorAt(fname, src, compErr)
-	if !strings.HasPrefix(got, fname+":") {
-		t.Errorf("FormatErrorAt should start with fname:, got: %q", got)
+	// fname is resolved to absolute, so check it contains the filename
+	if !strings.Contains(got, fname) {
+		t.Errorf("FormatErrorAt should contain fname, got: %q", got)
 	}
 	if !strings.Contains(got, "function not defined") {
 		t.Errorf("FormatErrorAt should contain the message, got: %q", got)
@@ -102,8 +103,8 @@ func TestFormatErrorAt(t *testing.T) {
 	// Error without position: falls back to "fname: message"
 	plainErr := &gojq.HaltError{}
 	got = gojq.FormatErrorAt(fname, src, plainErr)
-	if !strings.HasPrefix(got, fname+": ") {
-		t.Errorf("FormatErrorAt without position should be %q: ..., got: %q", fname, got)
+	if !strings.Contains(got, fname+": ") {
+		t.Errorf("FormatErrorAt without position should contain %q: ..., got: %q", fname, got)
 	}
 }
 
@@ -356,5 +357,294 @@ func TestPositionError_Halt(t *testing.T) {
 			}
 			break
 		}
+	}
+}
+
+// testModuleLoader implements the module loader interfaces needed for testing
+// module source position tracking.
+type testModuleLoader struct {
+	modules map[string]string // module name → source text
+}
+
+func (l *testModuleLoader) LoadModuleWithSource(name string, meta map[string]any) (*gojq.Query, string, string, error) {
+	source, ok := l.modules[name]
+	if !ok {
+		return nil, "", "", &testModuleNotFoundError{name}
+	}
+	q, err := gojq.Parse(source)
+	if err != nil {
+		return nil, "", "", err
+	}
+	fname := name + ".jq"
+	return q, fname, source, nil
+}
+
+type testModuleNotFoundError struct {
+	name string
+}
+
+func (e *testModuleNotFoundError) Error() string {
+	return "module not found: " + e.name
+}
+
+// TestSourcePositionError_ImportedModule verifies that runtime errors inside
+// imported module functions implement SourcePositionError and StackTraceError
+// with correct file, source, and call stack info.
+func TestSourcePositionError_ImportedModule(t *testing.T) {
+	moduleSrc := "# comment\ndef iter_value:\n    .[] ;\n"
+	loader := &testModuleLoader{
+		modules: map[string]string{
+			"mymod": moduleSrc,
+		},
+	}
+	mainSrc := `import "mymod" as m; m::iter_value`
+	q, err := gojq.Parse(mainSrc)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	code, err := gojq.Compile(q, gojq.WithModuleLoader(loader))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	iter := code.Run(42) // 42 is not iterable
+	for {
+		v, ok := iter.Next()
+		if !ok {
+			t.Fatal("expected an error")
+		}
+		rErr, ok := v.(error)
+		if !ok {
+			continue
+		}
+		if !strings.Contains(rErr.Error(), "cannot iterate over") {
+			t.Fatalf("unexpected error: %v", rErr)
+		}
+		spe, ok := rErr.(gojq.SourcePositionError)
+		if !ok {
+			t.Fatalf("expected SourcePositionError, got %T", rErr)
+		}
+		if spe.SourceFile() != "mymod.jq" {
+			t.Errorf("SourceFile() = %q, want %q", spe.SourceFile(), "mymod.jq")
+		}
+		if spe.SourceText() != moduleSrc {
+			t.Errorf("SourceText() = %q, want %q", spe.SourceText(), moduleSrc)
+		}
+		// Verify the position points to the correct line in the module
+		line, col := gojq.LineColumn(spe.SourceText(), spe.Position())
+		if line != 3 {
+			t.Errorf("line = %d, want 3", line)
+		}
+		if col < 4 || col > 5 {
+			t.Errorf("col = %d, want 4 or 5 (at [ in .[])", col)
+		}
+		// FormatErrorAt should use the module's file/source, not the main query's
+		formatted := gojq.FormatErrorAt("main.jq", mainSrc, rErr)
+		if !strings.Contains(formatted, "mymod.jq:") {
+			t.Errorf("FormatErrorAt should contain module filename, got: %q", formatted)
+		}
+		if !strings.Contains(formatted, "3:") {
+			t.Errorf("FormatErrorAt should show line 3, got: %q", formatted)
+		}
+		// Verify the stack trace
+		ste, ok := rErr.(gojq.StackTraceError)
+		if !ok {
+			t.Fatalf("expected StackTraceError, got %T", rErr)
+		}
+		stack := ste.CallStack()
+		if len(stack) == 0 {
+			t.Fatal("CallStack() should have at least one frame")
+		}
+		// The caller frame should be in the main query (empty SourceFile)
+		if stack[0].SourceFile != "" {
+			t.Errorf("caller frame SourceFile = %q, want empty (main query)", stack[0].SourceFile)
+		}
+		// The caller offset should point at m::iter_value in the main source
+		callerIdx := strings.Index(mainSrc, "m::iter_value")
+		if callerIdx >= 0 && stack[0].Offset != callerIdx {
+			t.Errorf("caller frame Offset = %d, want %d (index of m::iter_value)", stack[0].Offset, callerIdx)
+		}
+		// FormatErrorAt should include "↳" text
+		if !strings.Contains(formatted, "↳") {
+			t.Errorf("FormatErrorAt should include stack trace, got: %q", formatted)
+		}
+		return
+	}
+}
+
+// TestSourcePositionError_ErrorAtOffset0 verifies that when an error genuinely
+// occurs at byte offset 0 in a module (position 1:1), it still appears
+// correctly in the error position and stack trace — offset 0 must not be
+// filtered out as a bogus frame.
+func TestSourcePositionError_ErrorAtOffset0(t *testing.T) {
+	moduleSrc := "def at_zero: .[] ;\n"
+	loader := &testModuleLoader{
+		modules: map[string]string{
+			"offset0mod": moduleSrc,
+		},
+	}
+
+	mainSrc := `import "offset0mod" as m; m::at_zero`
+	q, err := gojq.Parse(mainSrc)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	code, err := gojq.Compile(q, gojq.WithModuleLoader(loader))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	iter := code.Run(42) // 42 is not iterable
+	for {
+		v, ok := iter.Next()
+		if !ok {
+			t.Fatal("expected an error")
+		}
+		rErr, ok := v.(error)
+		if !ok {
+			continue
+		}
+		if !strings.Contains(rErr.Error(), "cannot iterate over") {
+			t.Fatalf("unexpected error: %v", rErr)
+		}
+		// Error should point into the module
+		spe, ok := rErr.(gojq.SourcePositionError)
+		if !ok {
+			t.Fatalf("expected SourcePositionError, got %T", rErr)
+		}
+		if spe.SourceFile() != "offset0mod.jq" {
+			t.Errorf("SourceFile() = %q, want %q", spe.SourceFile(), "offset0mod.jq")
+		}
+		line, _ := gojq.LineColumn(spe.SourceText(), spe.Position())
+		// .[] is at "def at_zero: .[]" — line 1, col should be at '['
+		if line != 1 {
+			t.Errorf("error line = %d, want 1", line)
+		}
+		// Verify stack trace includes a caller frame
+		ste, ok := rErr.(gojq.StackTraceError)
+		if !ok {
+			t.Fatalf("expected StackTraceError, got %T", rErr)
+		}
+		stack := ste.CallStack()
+		if len(stack) == 0 {
+			t.Fatal("CallStack() should have at least one frame")
+		}
+		// FormatErrorAt should show the module file with line 1
+		formatted := gojq.FormatErrorAt("main.jq", mainSrc, rErr)
+		if !strings.Contains(formatted, "offset0mod.jq:1:") {
+			t.Errorf("FormatErrorAt should show offset0mod.jq:1:, got: %q", formatted)
+		}
+		if !strings.Contains(formatted, "↳") {
+			t.Errorf("FormatErrorAt should include stack trace, got: %q", formatted)
+		}
+		return
+	}
+}
+
+// TestSourcePositionError_NoBoguOffset0Frames verifies that compiler-generated
+// internal calls (like |=, _modify) do NOT produce bogus 1:1 frames in the
+// stack trace. These internal Func nodes have Offset: -1 to prevent recording.
+func TestSourcePositionError_NoBogusOffset0Frames(t *testing.T) {
+	// Module uses |= which internally compiles to _modify with Offset: -1.
+	// Without the fix, this would produce a phantom 1:1 frame.
+	moduleSrc := "def update_val: .val |= . + 1 ;\n"
+	loader := &testModuleLoader{
+		modules: map[string]string{
+			"updatemod": moduleSrc,
+		},
+	}
+	mainSrc := `import "updatemod" as u; u::update_val`
+	q, err := gojq.Parse(mainSrc)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	code, err := gojq.Compile(q, gojq.WithModuleLoader(loader))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	// Pass a non-object so .val fails
+	iter := code.Run("not-an-object")
+	for {
+		v, ok := iter.Next()
+		if !ok {
+			t.Fatal("expected an error")
+		}
+		rErr, ok := v.(error)
+		if !ok {
+			continue
+		}
+		// Check that no stack frame points to offset 0 (position 1:1) in the module
+		ste, ok := rErr.(gojq.StackTraceError)
+		if !ok {
+			// Error may not have stack trace info, which is also fine
+			return
+		}
+		spe, _ := rErr.(gojq.SourcePositionError)
+		// The error position itself at 1:1 in the module would only be valid
+		// if the error-causing code is actually at byte 0. For .val |=,
+		// the error should point at .val (offset 16 = "def update_val: " prefix).
+		if spe != nil && spe.SourceFile() != "" {
+			// The error should not be at offset 0 since .val is not at
+			// the start of the file
+			if spe.Position() == 0 {
+				t.Errorf("error position should not be 0 (bogus offset from internal call)")
+			}
+		}
+		for i, f := range ste.CallStack() {
+			if f.Offset == 0 && f.SourceFile != "" {
+				// A frame at offset 0 in a module is suspicious — it likely
+				// comes from an internal compiler-generated call.
+				frameLine, frameCol := gojq.LineColumn(f.SourceText, f.Offset)
+				t.Errorf("stack frame %d has offset 0 in %q (line %d, col %d) — likely a bogus frame from internal call",
+					i, f.SourceFile, frameLine, frameCol)
+			}
+		}
+		return
+	}
+}
+
+// TestSourcePositionError_MainQueryErrors verifies that errors in the main
+// query do NOT set SourceFile/SourceText (they should be empty) and have
+// no call stack.
+func TestSourcePositionError_MainQueryErrors(t *testing.T) {
+	src := ".[]"
+	q, _ := gojq.Parse(src)
+	code, _ := gojq.Compile(q)
+	iter := code.Run("hello")
+	for {
+		v, ok := iter.Next()
+		if !ok {
+			t.Fatal("expected an error")
+		}
+		rErr, ok := v.(error)
+		if !ok {
+			continue
+		}
+		spe, ok := rErr.(gojq.SourcePositionError)
+		if !ok {
+			t.Fatalf("expected SourcePositionError, got %T", rErr)
+		}
+		if spe.SourceFile() != "" {
+			t.Errorf("SourceFile() should be empty for main query errors, got %q", spe.SourceFile())
+		}
+		if spe.SourceText() != "" {
+			t.Errorf("SourceText() should be empty for main query errors, got %q", spe.SourceText())
+		}
+		// FormatErrorAt should use the provided fname/src for main query errors
+		formatted := gojq.FormatErrorAt("main.jq", src, rErr)
+		if !strings.Contains(formatted, "main.jq:1:") {
+			t.Errorf("FormatErrorAt should contain main.jq for main query errors, got: %q", formatted)
+		}
+		// No call stack for main query errors
+		ste, ok := rErr.(gojq.StackTraceError)
+		if !ok {
+			t.Fatalf("expected StackTraceError, got %T", rErr)
+		}
+		if stack := ste.CallStack(); stack != nil {
+			t.Errorf("CallStack() should be nil for main query errors, got %v", stack)
+		}
+		// FormatErrorAt should NOT include "↳" for main query errors
+		if strings.Contains(formatted, "↳") {
+			t.Errorf("FormatErrorAt should not include stack trace for main query errors, got: %q", formatted)
+		}
+		return
 	}
 }

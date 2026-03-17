@@ -11,6 +11,7 @@ func (env *env) execute(bc *Code, v any, vars ...any) Iter {
 	env.codes = bc.codes
 	env.codeinfos = bc.codeinfos
 	env.pcOffsets = bc.pcOffsets
+	env.sources = bc.sources
 	env.push(v)
 	for i := len(vars) - 1; i >= 0; i-- {
 		env.push(vars[i])
@@ -374,24 +375,67 @@ func (env *env) wrapRuntimeError(err error, pc int) error {
 	if _, ok := err.(PositionError); ok {
 		return err // already has a source position, don't re-wrap
 	}
-	if env.pcOffsets != nil {
-		if offset, ok := env.pcOffsets[pc]; ok {
-			return &runtimeError{err, offset}
-		}
-		// The error originated inside a builtin jq function whose instructions
-		// have no entries in pcOffsets (suppressed by builtinDepth). Walk the
-		// scope stack to find the nearest user-code call site that does have a
-		// recorded offset, so the error is attributed to the builtin call in
-		// the user's query (e.g. "map(.)" pointing at "map").
-		for i := env.scopes.index; i >= 0; i = env.scopes.data[i].next {
-			if callpc := env.scopes.data[i].value.pc; callpc >= 0 {
-				if offset, ok := env.pcOffsets[callpc]; ok {
-					return &runtimeError{err, offset}
-				}
-			}
-		}
+	if env.pcOffsets == nil {
+		return err
 	}
-	return err
+
+	// Find the error position (where the error actually occurred).
+	var errorPos *pcPosition
+	if pos, ok := env.pcOffsets[pc]; ok {
+		errorPos = &pos
+	}
+
+	// Walk the scope stack to collect caller frames. If errorPos is nil
+	// (error originated inside a builtin jq function whose instructions have
+	// no entries in pcOffsets), the first scope hit becomes the error position
+	// (attributed to the builtin call in the user's query).
+	var frames []stackFrame
+	seen := make(map[pcPosition]bool)
+	for i := env.scopes.index; i >= 0; i = env.scopes.data[i].next {
+		callpc := env.scopes.data[i].value.pc
+		if callpc < 0 {
+			continue
+		}
+		pos, ok := env.pcOffsets[callpc]
+		if !ok {
+			continue
+		}
+		if errorPos == nil {
+			errorPos = &pos
+			seen[pos] = true
+			continue
+		}
+		// Skip positions already seen (multiple scopes at the same call site)
+		if seen[pos] {
+			continue
+		}
+		seen[pos] = true
+		f := stackFrame{offset: pos.offset}
+		if pos.sourceIndex >= 0 && pos.sourceIndex < len(env.sources) {
+			f.fname = env.sources[pos.sourceIndex].fname
+			f.source = env.sources[pos.sourceIndex].source
+		}
+		frames = append(frames, f)
+	}
+
+	if errorPos == nil {
+		return err
+	}
+
+	re := env.runtimeErrorFromPosition(err, *errorPos)
+	re.frames = frames
+	return re
+}
+
+// runtimeErrorFromPosition creates a runtimeError with source file info
+// resolved from the pcPosition.
+func (env *env) runtimeErrorFromPosition(err error, pos pcPosition) *runtimeError {
+	re := &runtimeError{err: err, offset: pos.offset}
+	if pos.sourceIndex >= 0 && pos.sourceIndex < len(env.sources) {
+		re.fname = env.sources[pos.sourceIndex].fname
+		re.source = env.sources[pos.sourceIndex].source
+	}
+	return re
 }
 
 func (env *env) push(v any) {

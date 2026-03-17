@@ -2,6 +2,8 @@ package gojq
 
 import (
 	"fmt"
+	"path/filepath"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -37,6 +39,55 @@ type PositionError interface {
 	Position() int
 }
 
+// StackFrame represents one frame in a runtime error's call stack trace.
+type StackFrame struct {
+	// Offset is the byte offset in the source where the call occurred.
+	Offset int
+	// SourceFile is the file path, or empty for the main query.
+	SourceFile string
+	// SourceText is the full source text, or empty for the main query.
+	SourceText string
+}
+
+// SourcePositionError extends [PositionError] with source file information.
+// Runtime errors that occur inside imported modules implement this interface,
+// allowing callers to identify which file the error originated in and to
+// compute accurate line/column positions using the module's own source text.
+//
+//	iter := code.Run(input)
+//	for {
+//	    v, ok := iter.Next()
+//	    if !ok { break }
+//	    if err, ok := v.(error); ok {
+//	        if spe, ok := err.(gojq.SourcePositionError); ok && spe.SourceFile() != "" {
+//	            line, col := gojq.LineColumn(spe.SourceText(), spe.Position())
+//	            log.Fatalf("%s:%d:%d: %s", spe.SourceFile(), line, col+1, err)
+//	        } else {
+//	            log.Fatal(gojq.FormatErrorAt("myfile.jq", src, err))
+//	        }
+//	    }
+//	}
+type SourcePositionError interface {
+	PositionError
+	// SourceFile returns the file path of the source where the error occurred,
+	// or an empty string for errors in the main query.
+	SourceFile() string
+	// SourceText returns the full source text of the file where the error
+	// occurred, for use with [LineColumn].
+	SourceText() string
+}
+
+// StackTraceError extends [SourcePositionError] with a call stack trace.
+// The error location is available via Position/SourceFile/SourceText (inherited
+// from [SourcePositionError]). [StackTraceError.CallStack] returns the chain of call sites
+// leading to the error, from nearest caller to outermost.
+type StackTraceError interface {
+	SourcePositionError
+	// CallStack returns the call frames from the nearest caller to the outermost.
+	// Returns nil when no call chain information is available.
+	CallStack() []StackFrame
+}
+
 // FormatError returns a human-readable error message. If err implements
 // [PositionError] (which all compile-time and common runtime errors from this
 // package do), the message is prefixed with the 1-based line and column number
@@ -57,11 +108,20 @@ type PositionError interface {
 //	    }
 //	}
 func FormatError(src string, err error) string {
-	if pe, ok := err.(PositionError); ok {
+	var msg string
+	if spe, ok := err.(SourcePositionError); ok && spe.SourceFile() != "" {
+		line, col := LineColumn(spe.SourceText(), spe.Position())
+		msg = fmt.Sprintf("%s:%d:%d: %s", absPath(spe.SourceFile()), line, col+1, err)
+	} else if pe, ok := err.(PositionError); ok {
 		line, col := LineColumn(src, pe.Position())
-		return fmt.Sprintf("%d:%d: %s", line, col+1, err)
+		msg = fmt.Sprintf("%d:%d: %s", line, col+1, err)
+	} else {
+		return err.Error()
 	}
-	return err.Error()
+	if ste, ok := err.(StackTraceError); ok {
+		msg += formatCallStack(src, "", ste.CallStack())
+	}
+	return msg
 }
 
 // FormatErrorAt is like [FormatError] but also includes fname in the output,
@@ -88,11 +148,53 @@ func FormatError(src string, err error) string {
 //
 // When err has no position info, it returns "fname: message".
 func FormatErrorAt(fname, src string, err error) string {
-	if pe, ok := err.(PositionError); ok {
+	fname = absPath(fname)
+	var msg string
+	if spe, ok := err.(SourcePositionError); ok && spe.SourceFile() != "" {
+		line, col := LineColumn(spe.SourceText(), spe.Position())
+		msg = fmt.Sprintf("%s:%d:%d: %s", absPath(spe.SourceFile()), line, col+1, err)
+	} else if pe, ok := err.(PositionError); ok {
 		line, col := LineColumn(src, pe.Position())
-		return fmt.Sprintf("%s:%d:%d: %s", fname, line, col+1, err)
+		msg = fmt.Sprintf("%s:%d:%d: %s", fname, line, col+1, err)
+	} else {
+		return fname + ": " + err.Error()
 	}
-	return fname + ": " + err.Error()
+	if ste, ok := err.(StackTraceError); ok {
+		msg += formatCallStack(src, fname, ste.CallStack())
+	}
+	return msg
+}
+
+// formatCallStack formats call stack frames as "\n    ↳ fname:line:col" lines.
+func formatCallStack(mainSrc, mainFname string, frames []StackFrame) string {
+	if len(frames) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, f := range frames {
+		fname, src := absPath(f.SourceFile), f.SourceText
+		if f.SourceFile == "" {
+			fname, src = mainFname, mainSrc
+		}
+		if fname == "" {
+			fname = "<query>"
+		}
+		line, col := LineColumn(src, f.Offset)
+		fmt.Fprintf(&b, "\n    ↳ %s:%d:%d", fname, line, col+1)
+	}
+	return b.String()
+}
+
+// absPath resolves a file path to absolute. If the path is empty or
+// resolution fails, the original path is returned unchanged.
+func absPath(path string) string {
+	if path == "" {
+		return path
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
 }
 
 // LineColumn converts a byte offset in src into a 1-based line number and a
