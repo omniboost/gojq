@@ -16,6 +16,7 @@ import (
 //	LoadInitModules() ([]*Query, error)
 //	LoadModule(string) (*Query, error)
 //	LoadModuleWithMeta(string, map[string]any) (*Query, error)
+//	LoadModuleWithSource(string, map[string]any) (*Query, string, string, error)
 //	LoadJSON(string) (any, error)
 //	LoadJSONWithMeta(string, map[string]any) (any, error)
 type ModuleLoader any
@@ -67,19 +68,29 @@ func (l *moduleLoader) LoadInitModules() ([]*Query, error) {
 }
 
 func (l *moduleLoader) LoadModuleWithMeta(name string, meta map[string]any) (*Query, error) {
+	q, _, _, err := l.LoadModuleWithSource(name, meta)
+	return q, err
+}
+
+func (l *moduleLoader) LoadModuleWithSource(name string, meta map[string]any) (*Query, string, string, error) {
 	path, err := l.lookupModule(name, ".jq", meta)
 	if err != nil {
-		return nil, err
+		return nil, "", "", err
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return nil, "", "", err
 	}
 	cnt, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, "", "", err
 	}
-	q, err := parseModule(string(cnt), filepath.Dir(path))
+	source := string(cnt)
+	q, err := parseModule(source, filepath.Dir(path))
 	if err != nil {
-		return nil, &queryParseError{path, string(cnt), err}
+		return nil, "", "", &queryParseError{path, source, err}
 	}
-	return q, nil
+	return q, path, source, nil
 }
 
 func (l *moduleLoader) LoadJSONWithMeta(name string, meta map[string]any) (any, error) {

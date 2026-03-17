@@ -10,7 +10,8 @@ type env struct {
 	values    []any
 	codes     []*code
 	codeinfos []codeinfo
-	pcOffsets map[int]int // maps PC to source byte offset for runtime errors
+	pcOffsets map[int]pcPosition // maps PC to source position for runtime errors
+	sources   []sourceInfo       // source files for imported modules
 	forks     []fork
 	backtrack bool
 	offset    int

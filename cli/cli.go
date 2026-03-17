@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -217,7 +218,11 @@ Usage:
 		if err != nil {
 			return err
 		}
-		arg, args, fname = string(src), args[1:], args[0]
+		fname = args[0]
+		if abs, err := filepath.Abs(fname); err == nil {
+			fname = abs
+		}
+		arg, args = string(src), args[1:]
 	} else if len(args) == 0 {
 		arg = "."
 	} else {
@@ -361,15 +366,48 @@ func (cli *cli) process(iter inputIter, code *gojq.Code) error {
 }
 
 // formatRuntimeError adds file/line context to errors that implement
-// [gojq.PositionError], matching the compile-error style.
+// [gojq.PositionError], matching the compile-error style. When the error
+// carries a call stack ([gojq.StackTraceError]), caller frames are appended.
 func (cli *cli) formatRuntimeError(e error) string {
-	if cli.queryFname != "" {
+	// Primary error display.
+	var primary string
+	if spe, ok := e.(gojq.SourcePositionError); ok && spe.SourceFile() != "" {
+		primary = (&runtimeDisplayError{
+			fname: spe.SourceFile(), contents: spe.SourceText(),
+			err: e, offset: spe.Position(),
+		}).Error()
+	} else if cli.queryFname != "" {
 		if eo, ok := e.(gojq.PositionError); ok {
-			return (&runtimeDisplayError{fname: cli.queryFname, contents: cli.querySource, err: e, offset: eo.Position()}).Error()
+			primary = (&runtimeDisplayError{fname: cli.queryFname, contents: cli.querySource, err: e, offset: eo.Position()}).Error()
 		}
 	}
-	return e.Error()
+	if primary == "" {
+		return e.Error()
+	}
+
+	// Append call stack frames.
+	if ste, ok := e.(gojq.StackTraceError); ok {
+		for _, f := range ste.CallStack() {
+			fname, contents := f.SourceFile, f.SourceText
+			if fname == "" {
+				fname = cli.queryFname
+				contents = cli.querySource
+			}
+			if fname == "" {
+				continue
+			}
+			primary += "\n" + (&runtimeDisplayError{
+				fname: fname, contents: contents,
+				err: calledFromHereError{}, offset: f.Offset,
+			}).Error()
+		}
+	}
+	return primary
 }
+
+type calledFromHereError struct{}
+
+func (calledFromHereError) Error() string { return "↳ called from here" }
 
 func (cli *cli) printValues(iter gojq.Iter) error {
 	m := cli.createMarshaler()
