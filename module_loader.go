@@ -16,6 +16,7 @@ import (
 //	LoadInitModules() ([]*Query, error)
 //	LoadModule(string) (*Query, error)
 //	LoadModuleWithMeta(string, map[string]any) (*Query, error)
+//	LoadModuleWithSource(string, map[string]any) (*Query, string, string, error)
 //	LoadJSON(string) (any, error)
 //	LoadJSONWithMeta(string, map[string]any) (any, error)
 type ModuleLoader any
