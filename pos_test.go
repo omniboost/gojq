@@ -539,7 +539,7 @@ func TestSourcePositionError_ErrorAtOffset0(t *testing.T) {
 	}
 }
 
-// TestSourcePositionError_NoBoguOffset0Frames verifies that compiler-generated
+// TestSourcePositionError_NoBogusOffset0Frames verifies that compiler-generated
 // internal calls (like |=, _modify) do NOT produce bogus 1:1 frames in the
 // stack trace. These internal Func nodes have Offset: -1 to prevent recording.
 func TestSourcePositionError_NoBogusOffset0Frames(t *testing.T) {
