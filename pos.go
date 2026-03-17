@@ -19,7 +19,7 @@ import (
 //	code, err := gojq.Compile(query)
 //	if err != nil {
 //	    log.Fatal(gojq.FormatErrorAt("myfile.jq", src, err))
-//	    // → "myfile.jq:1:8: function not defined: undefined_func/0"
+//	    // → "/home/user/myfile.jq:1:8: function not defined: undefined_func/0"
 //	}
 //
 //	iter := code.Run(input)
@@ -28,7 +28,7 @@ import (
 //	    if !ok { break }
 //	    if err, ok := v.(error); ok {
 //	        log.Fatal(gojq.FormatErrorAt("myfile.jq", src, err))
-//	        // → "myfile.jq:1:1: expected a string for object key but got: null"
+//	        // → "/home/user/myfile.jq:1:1: expected a string for object key but got: null"
 //	    }
 //	}
 type PositionError interface {
@@ -134,7 +134,7 @@ func FormatError(src string, err error) string {
 //
 //	code, err := gojq.Compile(query)
 //	if err != nil { log.Fatal(gojq.FormatErrorAt("myfile.jq", string(src), err)) }
-//	// → "myfile.jq:3:5: function not defined: undefined_func/0"
+//	// → "/home/user/myfile.jq:3:5: function not defined: undefined_func/0"
 //
 //	iter := code.Run(input)
 //	for {
@@ -142,11 +142,11 @@ func FormatError(src string, err error) string {
 //	    if !ok { break }
 //	    if err, ok := v.(error); ok {
 //	        log.Fatal(gojq.FormatErrorAt("myfile.jq", string(src), err))
-//	        // → "myfile.jq:5:12: expected a string for object key but got: null"
+//	        // → "/home/user/myfile.jq:5:12: expected a string for object key but got: null"
 //	    }
 //	}
 //
-// When err has no position info, it returns "fname: message".
+// When err has no position info, it returns "absPath(fname): message".
 func FormatErrorAt(fname, src string, err error) string {
 	fname = absPath(fname)
 	var msg string
